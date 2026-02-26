@@ -108,39 +108,47 @@ func init() {
 				return
 			}
 
-			if connDetails.IsConfigured() {
-				var client *kgo.Client
-				var clientMut sync.Mutex
+		if connDetails.IsConfigured() {
+			var client *kgo.Client
+			var clientMut sync.RWMutex
 
-				output, err = NewFranzWriterFromConfig(
-					conf,
-					NewFranzWriterHooks(
-						func(ctx context.Context, fn FranzSharedClientUseFn) error {
+			output, err = NewFranzWriterFromConfig(
+				conf,
+				NewFranzWriterHooks(
+					func(ctx context.Context, fn FranzSharedClientUseFn) error {
+						clientMut.RLock()
+						c := client
+						clientMut.RUnlock()
+
+						if c == nil {
 							clientMut.Lock()
-							defer clientMut.Unlock()
-
 							if client == nil {
 								var err error
 								if client, err = NewFranzClient(ctx, append(connDetails.FranzOpts(), producerOpts...)...); err != nil {
+									clientMut.Unlock()
 									return err
 								}
 							}
-							return fn(&FranzSharedClientInfo{
-								Client:      client,
-								ConnDetails: connDetails,
-							})
-						}).WithYieldClientFn(
-						func(context.Context) error {
-							clientMut.Lock()
-							defer clientMut.Unlock()
+							c = client
+							clientMut.Unlock()
+						}
 
-							if client == nil {
-								return nil
-							}
-							client.Close()
-							client = nil
+						return fn(&FranzSharedClientInfo{
+							Client:      c,
+							ConnDetails: connDetails,
+						})
+					}).WithYieldClientFn(
+					func(context.Context) error {
+						clientMut.Lock()
+						defer clientMut.Unlock()
+
+						if client == nil {
 							return nil
-						}))
+						}
+						client.Close()
+						client = nil
+						return nil
+					}))
 			} else {
 				mgr.Logger().Info("Connection fields omitted, falling back to common redpanda config.")
 
